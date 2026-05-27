@@ -7,9 +7,11 @@ Milhares de jogos são lançados anualmente na Steam, mas apenas uma fração at
 ## Stack
 Python · Pandas · SQLite · Streamlit · Plotly · API Steam · API Wikidata
 
-## Fonte de Dados
-[SteamSpy & Steam Store API] — catálogo completo da plataforma contendo preço, engajamento (reviews), desenvolvedora, gênero, data de lançamento e taxa de aprovação.
-[Wikidata SPARQL] — metadados de estúdios e cruzamento de localizações (País de Origem).
+## Fonte de Dados & Arquitetura de APIs
+Este projeto orquestra 3 fontes de dados distintas para formar um banco de dados unificado:
+1. **SteamSpy API:** Extração em massa via `request=genre`. Responsável por alimentar nossa base quantitativa principal (Preço, Reviews Positivas/Negativas, Nome do Jogo e Nome do Estúdio).
+2. **Steam Storefront API:** A API oficial da loja. Construímos um scraper complementar que consulta o endpoint `api/appdetails` jogo a jogo para extrair metadados precisos (como a Data de Lançamento exata) que o SteamSpy não fornece com precisão.
+3. **Wikidata SPARQL API:** Banco semântico mundial utilizado para *Data Enrichment*. Através de consultas em grafos (SPARQL), cruzamos os nomes dos desenvolvedores com milhares de registros de empresas para descobrir e mapear o **País de Origem** de cada estúdio.
 
 ## Metodologia
 1. **Coleta de Massa** — raspagem automatizada das APIs do SteamSpy e da loja oficial usando Orientação a Objetos.
