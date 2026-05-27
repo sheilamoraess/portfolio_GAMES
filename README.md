@@ -33,7 +33,8 @@ Seção dedicada exclusivamente aos estúdios do Brasil, com análise de qualida
 ## Como Rodar Localmente
 ```bash
 # 1. Clonar o repositório
-git clone https://github.com/sheilamoraess/steam-market-intelligence.git
+git clone https://github.com/sheilamoraess/portfolio_GAMES.git
+cd portfolio_GAMES
 
 # 2. Instalar dependências
 pip install -r requirements.txt
