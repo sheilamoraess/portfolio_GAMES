@@ -277,7 +277,7 @@ with tab1:
     render_chart_with_insight(
         fig_heat,
         "HEATMAP: ONDE SEU DINHEIRO RENDE MAIS?",
-        "Um mapa de calor (Heatmap) cruzando faixas de preços específicas contra os gêneros. <b>Cores mais quentes (Rosa/Amarelo)</b> indicam um valor de IVS altíssimo (um investimento excelente do seu tempo e dinheiro).",
+        "Um mapa de calor (Heatmap) cruzando faixas de preços contra os gêneros.<br><br><b>O que é o IVS?</b><br>O <i>Índice de Valor Steam</i> é uma métrica matemática exclusiva deste projeto que calcula o Custo-Benefício de um jogo usando a fórmula: <code style='color:#FF00FF;'>(Aprovação x Engajamento) / Preço</code>.<ul style='margin-top:5px;'><li><b>Aprovação:</b> Porcentagem de reviews positivas.</li><li><b>Engajamento:</b> Volume total de jogadores avaliando.</li><li><b>Preço:</b> O denominador. Jogos caros diminuem sua nota.</li></ul><b>Cores mais quentes (Rosa/Amarelo)</b> indicam um IVS altíssimo (excelente investimento).",
         "Jogos <b>Gratuitos de Ação e Aventura</b> disparam no índice, pois oferecem alto engajamento a custo zero (ex: CS:GO, Apex). No segmento pago, os <b>jogos Casuais de até R$ 15</b> são as grandes 'pechinchas' absolutas, onde o jogador sente que paga muito pouco por uma diversão imensa."
     )
 
