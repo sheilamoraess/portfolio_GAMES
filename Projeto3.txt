@@ -1,0 +1,633 @@
+Ótimo. Repositório único com duas seções é a melhor escolha — fica claro que as análises compartilham o mesmo pipeline de coleta mas têm objetivos diferentes, e isso por si só já é uma decisão de arquitetura que você pode explicar em entrevista.
+
+---
+
+# Projeto — Steam Market Intelligence
+*Análise de mercado + custo-benefício de games · SteamSpy API · Web Scraping · Power BI · Tableau · Python POO*
+
+---
+
+## Conceito
+
+A Steam é a maior plataforma de distribuição de games do mundo, com mais de 50 mil jogos no catálogo e dados públicos acessíveis. Este projeto usa esses dados para responder duas perguntas de negócio distintas, cada uma com sua própria metodologia:
+
+**Seção 1 — Visão de Mercado:** como o mercado de games na Steam evoluiu ao longo do tempo? Quais gêneros cresceram, quais perderam espaço, e o que os dados revelam sobre o comportamento da indústria?
+
+**Seção 2 — Custo-Benefício:** dado o preço de um jogo e suas avaliações, qual entrega mais valor por real gasto? É possível construir um índice objetivo para guiar a decisão de compra?
+
+O diferencial em relação ao projeto do Spotify é triplo: dados coletados ativamente (API + scraping em vez de CSV pronto), análise temporal como metodologia central da Seção 1, e construção de métrica própria na Seção 2 — o Índice de Valor Steam (IVS).
+
+---
+
+## Estrutura do Repositório
+
+```
+steam-market-intelligence/
+├── README.md
+├── requirements.txt
+├── .gitignore
+│
+├── src/
+│   ├── collectors/
+│   │   ├── __init__.py
+│   │   ├── steamspy_collector.py    ← coleta via API SteamSpy
+│   │   └── steam_scraper.py         ← scraping da Steam Store
+│   │
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── game.py                  ← classe de domínio Game
+│   │   └── database.py              ← classe de acesso ao banco
+│   │
+│   ├── processors/
+│   │   ├── __init__.py
+│   │   ├── market_processor.py      ← análise temporal de mercado
+│   │   └── value_processor.py       ← cálculo do IVS
+│   │
+│   └── exporters/
+│       ├── __init__.py
+│       └── exporter.py              ← exporta CSVs para Power BI e Tableau
+│
+├── data/
+│   ├── raw/                         ← dados brutos coletados
+│   ├── processed/                   ← dados tratados prontos para análise
+│   └── steam_games.db               ← banco SQLite (no .gitignore)
+│
+├── notebooks/
+│   ├── 01_exploracao_mercado.ipynb
+│   └── 02_exploracao_valor.ipynb
+│
+└── dashboards/
+    ├── power_bi/
+    │   └── steam_mercado.pbix
+    └── tableau/
+        └── steam_valor.twbx
+```
+
+---
+
+## Fase 1 — Modelagem de domínio com POO (Semana 1)
+
+**1. Classe Game — models/game.py**
+
+Esta é a classe central do projeto. Toda entidade de jogo no sistema passa por ela, garantindo consistência de tipos e validação dos dados antes de qualquer processamento:
+
+```python
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Optional
+
+@dataclass
+class Game:
+    app_id: int
+    name: str
+    developer: str
+    publisher: str
+    genre: str
+    release_date: Optional[date]
+    price_usd: float
+    positive_reviews: int
+    negative_reviews: int
+    owners_estimate: str        # ex: "1,000,000 .. 2,000,000"
+    average_playtime_forever: int  # em minutos
+    peak_ccu: int               # pico de jogadores simultâneos
+
+    # Calculados automaticamente
+    total_reviews: int = field(init=False)
+    approval_rate: float = field(init=False)
+    ivs: float = field(init=False)  # Índice de Valor Steam
+
+    def __post_init__(self):
+        self.total_reviews = self.positive_reviews + self.negative_reviews
+        self.approval_rate = (
+            self.positive_reviews / self.total_reviews
+            if self.total_reviews > 0 else 0.0
+        )
+        self.ivs = self._calcular_ivs()
+
+    def _calcular_ivs(self) -> float:
+        """
+        Índice de Valor Steam (IVS):
+        Combina aprovação, horas de jogo e preço numa métrica única.
+        Jogos gratuitos recebem penalidade leve para não dominar o ranking.
+        """
+        if self.price_usd <= 0:
+            preco_ajustado = 1.0  # gratuito vale 1 dólar fictício
+            penalidade = 0.8
+        else:
+            preco_ajustado = self.price_usd
+            penalidade = 1.0
+
+        horas = self.average_playtime_forever / 60
+        ivs = (self.approval_rate * horas / preco_ajustado) * penalidade
+        return round(ivs, 4)
+
+    def to_dict(self) -> dict:
+        return {
+            'app_id':           self.app_id,
+            'name':             self.name,
+            'developer':        self.developer,
+            'publisher':        self.publisher,
+            'genre':            self.genre,
+            'release_date':     self.release_date,
+            'price_usd':        self.price_usd,
+            'positive_reviews': self.positive_reviews,
+            'negative_reviews': self.negative_reviews,
+            'total_reviews':    self.total_reviews,
+            'approval_rate':    self.approval_rate,
+            'avg_playtime_h':   round(self.average_playtime_forever / 60, 1),
+            'peak_ccu':         self.peak_ccu,
+            'owners_estimate':  self.owners_estimate,
+            'ivs':              self.ivs,
+        }
+```
+
+**2. Classe Database — models/database.py**
+
+```python
+import sqlite3
+import pandas as pd
+from typing import List
+from models.game import Game
+
+class Database:
+    def __init__(self, db_path: str = 'data/steam_games.db'):
+        self.db_path = db_path
+        self._init_schema()
+
+    def _connect(self):
+        return sqlite3.connect(self.db_path)
+
+    def _init_schema(self):
+        with self._connect() as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS games (
+                    app_id           INTEGER PRIMARY KEY,
+                    name             TEXT NOT NULL,
+                    developer        TEXT,
+                    publisher        TEXT,
+                    genre            TEXT,
+                    release_date     TEXT,
+                    price_usd        REAL,
+                    positive_reviews INTEGER,
+                    negative_reviews INTEGER,
+                    total_reviews    INTEGER,
+                    approval_rate    REAL,
+                    avg_playtime_h   REAL,
+                    peak_ccu         INTEGER,
+                    owners_estimate  TEXT,
+                    ivs              REAL,
+                    coletado_em      TEXT DEFAULT (datetime('now'))
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS genre_history (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    genre       TEXT,
+                    year        INTEGER,
+                    total_games INTEGER,
+                    avg_price   REAL,
+                    avg_reviews REAL,
+                    avg_ivs     REAL
+                )
+            ''')
+            conn.execute(
+                'CREATE INDEX IF NOT EXISTS idx_genre ON games(genre)'
+            )
+            conn.execute(
+                'CREATE INDEX IF NOT EXISTS idx_release ON games(release_date)'
+            )
+
+    def inserir_games(self, games: List[Game]):
+        with self._connect() as conn:
+            for game in games:
+                conn.execute('''
+                    INSERT OR REPLACE INTO games
+                    VALUES (:app_id, :name, :developer, :publisher, :genre,
+                            :release_date, :price_usd, :positive_reviews,
+                            :negative_reviews, :total_reviews, :approval_rate,
+                            :avg_playtime_h, :peak_ccu, :owners_estimate,
+                            :ivs, datetime('now'))
+                ''', game.to_dict())
+
+    def buscar_todos(self) -> pd.DataFrame:
+        with self._connect() as conn:
+            return pd.read_sql('SELECT * FROM games', conn)
+
+    def buscar_por_genero(self, genero: str) -> pd.DataFrame:
+        with self._connect() as conn:
+            return pd.read_sql(
+                'SELECT * FROM games WHERE genre = ?', conn, params=[genero]
+            )
+```
+
+---
+
+## Fase 2 — Coleta de dados (Semana 1–2)
+
+**3. Coletor SteamSpy API — collectors/steamspy_collector.py**
+
+A SteamSpy API é gratuita, sem autenticação e retorna dados agregados de todos os jogos da Steam. O endpoint principal é `steamspy.com/api.php`:
+
+```python
+import requests
+import time
+import pandas as pd
+from datetime import date
+from typing import List, Optional
+from models.game import Game
+from models.database import Database
+
+class SteamSpyCollector:
+    BASE_URL = 'https://steamspy.com/api.php'
+    DELAY_SECONDS = 1.5  # respeitar rate limit da API
+
+    def __init__(self, database: Database):
+        self.db = database
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': 'steam-portfolio-project/1.0'})
+
+    def _get(self, params: dict) -> dict:
+        response = self.session.get(self.BASE_URL, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    def _parse_date(self, date_str: str) -> Optional[date]:
+        for fmt in ['%b %d, %Y', '%b %Y']:
+            try:
+                from datetime import datetime
+                return datetime.strptime(date_str, fmt).date()
+            except (ValueError, TypeError):
+                continue
+        return None
+
+    def _parse_game(self, data: dict) -> Optional[Game]:
+        try:
+            return Game(
+                app_id=int(data['appid']),
+                name=data.get('name', 'Unknown'),
+                developer=data.get('developer', 'Unknown'),
+                publisher=data.get('publisher', 'Unknown'),
+                genre=data.get('genre', 'Unknown').split(',')[0].strip(),
+                release_date=self._parse_date(data.get('release_date', '')),
+                price_usd=int(data.get('price', 0)) / 100,
+                positive_reviews=int(data.get('positive', 0)),
+                negative_reviews=int(data.get('negative', 0)),
+                owners_estimate=data.get('owners', '0 .. 0'),
+                average_playtime_forever=int(data.get('average_forever', 0)),
+                peak_ccu=int(data.get('peak_ccu', 0)),
+            )
+        except Exception as e:
+            print(f'  Erro ao parsear {data.get("name")}: {e}')
+            return None
+
+    def coletar_por_genero(self, genero: str) -> List[Game]:
+        """Coleta todos os jogos de um gênero via SteamSpy."""
+        print(f'Coletando gênero: {genero}...')
+        data = self._get({'request': 'genre', 'genre': genero})
+        games = []
+        for item in data.values():
+            game = self._parse_game(item)
+            if game:
+                games.append(game)
+            time.sleep(self.DELAY_SECONDS)
+        print(f'  {len(games)} jogos coletados.')
+        return games
+
+    def coletar_top_100(self) -> List[Game]:
+        """Coleta os 100 jogos mais jogados da semana."""
+        print('Coletando top 100...')
+        data = self._get({'request': 'top100in2weeks'})
+        return [g for g in
+                (self._parse_game(item) for item in data.values())
+                if g is not None]
+
+    def executar_coleta_completa(self, generos: List[str]):
+        """Pipeline completo: coleta, parseia e persiste no banco."""
+        todos = []
+        for genero in generos:
+            games = self.coletar_por_genero(genero)
+            todos.extend(games)
+            time.sleep(2)
+        self.db.inserir_games(todos)
+        print(f'\nTotal inserido no banco: {len(todos)} jogos.')
+```
+
+**4. Scraper da Steam Store — collectors/steam_scraper.py**
+
+O scraping complementa a API com dados que a SteamSpy não fornece, como tags detalhadas, descrição e número de conquistas:
+
+```python
+import requests
+import time
+from bs4 import BeautifulSoup
+from typing import Optional
+from models.database import Database
+
+class SteamStoreScraper:
+    BASE_URL = 'https://store.steampowered.com/app/'
+    DELAY_SECONDS = 2.0
+
+    def __init__(self, database: Database):
+        self.db = database
+        self.session = requests.Session()
+        # Cookie necessário para ignorar aviso de idade
+        self.session.cookies.set('birthtime', '631152001', domain='store.steampowered.com')
+        self.session.cookies.set('lastagecheckage', '1-0-2000', domain='store.steampowered.com')
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (compatible; portfolio-project/1.0)'
+        })
+
+    def scrape_game(self, app_id: int) -> Optional[dict]:
+        url = f'{self.BASE_URL}{app_id}/'
+        try:
+            response = self.session.get(url, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Tags populares definidas pelos usuários
+            tags = [
+                t.text.strip()
+                for t in soup.select('a.app_tag')
+            ]
+
+            # Número de conquistas
+            conquistas_el = soup.select_one('.block_title.online_achievement_block')
+            conquistas = conquistas_el.text.strip() if conquistas_el else '0'
+
+            # Descrição curta
+            desc_el = soup.select_one('.game_description_snippet')
+            descricao = desc_el.text.strip() if desc_el else ''
+
+            return {
+                'app_id':     app_id,
+                'tags':       ', '.join(tags[:5]),
+                'conquistas': conquistas,
+                'descricao':  descricao[:300],
+            }
+        except Exception as e:
+            print(f'  Erro no scraping de {app_id}: {e}')
+            return None
+
+    def enriquecer_banco(self, limit: int = 500):
+        """Enriquece os jogos do banco com dados da Store."""
+        import sqlite3
+        with sqlite3.connect(self.db.db_path) as conn:
+            # Adiciona colunas se não existirem
+            for col in ['tags TEXT', 'conquistas TEXT', 'descricao TEXT']:
+                try:
+                    conn.execute(f'ALTER TABLE games ADD COLUMN {col}')
+                except Exception:
+                    pass
+
+            ids = conn.execute(
+                'SELECT app_id FROM games WHERE tags IS NULL LIMIT ?', [limit]
+            ).fetchall()
+
+        for (app_id,) in ids:
+            dados = self.scrape_game(app_id)
+            if dados:
+                with sqlite3.connect(self.db.db_path) as conn:
+                    conn.execute('''
+                        UPDATE games SET tags = ?, conquistas = ?, descricao = ?
+                        WHERE app_id = ?
+                    ''', (dados['tags'], dados['conquistas'],
+                          dados['descricao'], app_id))
+            time.sleep(self.DELAY_SECONDS)
+        print('Enriquecimento concluído.')
+```
+
+---
+
+## Fase 3 — Processamento e análise (Semana 2)
+
+**5. Análise de mercado — processors/market_processor.py**
+
+```python
+import pandas as pd
+import sqlite3
+from models.database import Database
+
+class MarketProcessor:
+    def __init__(self, database: Database):
+        self.db = database
+
+    def serie_historica_por_genero(self) -> pd.DataFrame:
+        """
+        Agrega lançamentos por gênero e ano.
+        Base para o gráfico de área empilhada no Power BI.
+        """
+        df = self.db.buscar_todos()
+        df['year'] = pd.to_datetime(df['release_date'], errors='coerce').dt.year
+        df = df.dropna(subset=['year'])
+        df['year'] = df['year'].astype(int)
+        df = df[df['year'].between(2010, 2024)]
+
+        return df.groupby(['year', 'genre']).agg(
+            total_games=('app_id', 'count'),
+            avg_price=('price_usd', 'mean'),
+            avg_reviews=('total_reviews', 'mean'),
+            avg_ivs=('ivs', 'mean'),
+        ).reset_index().round(2)
+
+    def crescimento_por_genero(self) -> pd.DataFrame:
+        """
+        Calcula taxa de crescimento YoY por gênero.
+        Identifica quais gêneros estão em ascensão.
+        """
+        serie = self.serie_historica_por_genero()
+        serie = serie.sort_values(['genre', 'year'])
+        serie['crescimento_yoy'] = serie.groupby('genre')['total_games'].pct_change() * 100
+        return serie.round(2)
+
+    def dominio_indie_vs_aaa(self) -> pd.DataFrame:
+        """
+        Classifica jogos como Indie ou AAA pelo preço e publisher,
+        e compara volume, avaliação e IVS médio entre os dois grupos.
+        """
+        df = self.db.buscar_todos()
+        df['categoria'] = df['price_usd'].apply(
+            lambda p: 'AAA' if p >= 40 else ('Indie' if p <= 20 else 'Mid-Tier')
+        )
+        return df.groupby('categoria').agg(
+            total=('app_id', 'count'),
+            preco_medio=('price_usd', 'mean'),
+            aprovacao_media=('approval_rate', 'mean'),
+            ivs_medio=('ivs', 'mean'),
+            playtime_medio_h=('avg_playtime_h', 'mean'),
+        ).reset_index().round(2)
+
+    def exportar_para_powerbi(self, output_path: str = 'data/processed/'):
+        serie = self.crescimento_por_genero()
+        serie.to_csv(f'{output_path}serie_historica.csv', index=False)
+
+        indie = self.dominio_indie_vs_aaa()
+        indie.to_csv(f'{output_path}indie_vs_aaa.csv', index=False)
+
+        print('Exportação para Power BI concluída.')
+```
+
+**6. Cálculo do IVS — processors/value_processor.py**
+
+```python
+import pandas as pd
+from models.database import Database
+
+class ValueProcessor:
+    # Mínimos para entrar no ranking (evitar jogos sem dados)
+    MIN_REVIEWS = 500
+    MIN_PLAYTIME_H = 2.0
+
+    def __init__(self, database: Database):
+        self.db = database
+
+    def ranking_custo_beneficio(self, top_n: int = 200) -> pd.DataFrame:
+        df = self.db.buscar_todos()
+
+        # Filtros de qualidade mínima
+        df = df[
+            (df['total_reviews'] >= self.MIN_REVIEWS) &
+            (df['avg_playtime_h'] >= self.MIN_PLAYTIME_H) &
+            (df['ivs'] > 0)
+        ]
+
+        # Normaliza IVS para escala 0–100 para facilitar leitura
+        ivs_min = df['ivs'].min()
+        ivs_max = df['ivs'].max()
+        df['ivs_score'] = ((df['ivs'] - ivs_min) / (ivs_max - ivs_min) * 100).round(1)
+
+        # Classifica faixa de preço
+        df['faixa_preco'] = pd.cut(
+            df['price_usd'],
+            bins=[-1, 0, 15, 30, 60, 999],
+            labels=['Gratuito', 'Até R$15', 'R$15–30', 'R$30–60', 'Acima de R$60']
+        )
+
+        colunas = ['app_id', 'name', 'genre', 'developer', 'price_usd',
+                   'faixa_preco', 'approval_rate', 'avg_playtime_h',
+                   'total_reviews', 'ivs', 'ivs_score', 'tags']
+
+        return (df[colunas]
+                .sort_values('ivs_score', ascending=False)
+                .head(top_n)
+                .reset_index(drop=True))
+
+    def melhor_genero_por_preco(self) -> pd.DataFrame:
+        """Qual gênero entrega mais valor em cada faixa de preço?"""
+        df = self.ranking_custo_beneficio(top_n=9999)
+        return df.groupby(['faixa_preco', 'genre']).agg(
+            ivs_medio=('ivs_score', 'mean'),
+            total_jogos=('app_id', 'count'),
+        ).reset_index().sort_values(['faixa_preco', 'ivs_medio'], ascending=[True, False])
+
+    def exportar_para_tableau(self, output_path: str = 'data/processed/'):
+        ranking = self.ranking_custo_beneficio()
+        ranking.to_csv(f'{output_path}ranking_ivs.csv', index=False)
+
+        por_genero = self.melhor_genero_por_preco()
+        por_genero.to_csv(f'{output_path}ivs_por_genero_e_preco.csv', index=False)
+
+        print('Exportação para Tableau concluída.')
+```
+
+---
+
+## Fase 4 — Exportador e script principal (Semana 2)
+
+**7. Script de entrada — main.py**
+
+```python
+from models.database import Database
+from collectors.steamspy_collector import SteamSpyCollector
+from collectors.steam_scraper import SteamStoreScraper
+from processors.market_processor import MarketProcessor
+from processors.value_processor import ValueProcessor
+
+GENEROS = [
+    'Action', 'Adventure', 'RPG', 'Strategy',
+    'Simulation', 'Sports', 'Indie', 'Casual'
+]
+
+if __name__ == '__main__':
+    db = Database()
+
+    # Etapa 1 — Coleta via API
+    print('=== ETAPA 1: Coleta SteamSpy ===')
+    collector = SteamSpyCollector(db)
+    collector.executar_coleta_completa(GENEROS)
+
+    # Etapa 2 — Enriquecimento via scraping
+    print('\n=== ETAPA 2: Enriquecimento Steam Store ===')
+    scraper = SteamStoreScraper(db)
+    scraper.enriquecer_banco(limit=300)
+
+    # Etapa 3 — Processamento e exportação
+    print('\n=== ETAPA 3: Processamento ===')
+    market = MarketProcessor(db)
+    market.exportar_para_powerbi()
+
+    value = ValueProcessor(db)
+    value.exportar_para_tableau()
+
+    print('\nPipeline completo. CSVs prontos em data/processed/')
+```
+
+---
+
+## Fase 5 — Dashboards (Semana 3)
+
+**8. Power BI — Relatório de Mercado (Seção 1)**
+
+Páginas sugeridas:
+
+- **Visão Geral** — total de jogos analisados, preço médio global, aprovação média, gênero dominante (KPIs)
+- **Evolução do Mercado** — gráfico de área empilhada: lançamentos por gênero ao longo dos anos. Filtro de gênero
+- **Crescimento YoY** — gráfico de barras com taxa de crescimento anual por gênero. Destaque em vermelho/verde
+- **Indie vs. AAA** — comparativo de aprovação, IVS e playtime médio entre as três categorias de preço
+- **Preço ao longo do tempo** — linha histórica do preço médio por gênero
+
+**9. Tableau — Ranking de Custo-Benefício (Seção 2)**
+
+Visões sugeridas:
+
+- **Ranking IVS** — tabela interativa dos top 200 jogos com IVS Score, filtro por gênero e faixa de preço, link clicável para a página na Steam
+- **Scatter plot** — eixo X: preço, eixo Y: horas médias de jogo, tamanho do ponto: total de reviews, cor: IVS Score. Permite ver visualmente onde estão os jogos mais eficientes
+- **Melhor gênero por faixa de preço** — heatmap: linhas = faixa de preço, colunas = gênero, valor = IVS médio
+
+---
+
+## Fase 6 — Publicação (Semana 3–4)
+
+**10. .gitignore**
+
+```
+data/steam_games.db
+data/raw/
+__pycache__/
+*.pyc
+.env
+```
+
+**11. Como rodar — README**
+
+```bash
+# 1. Clonar
+git clone https://github.com/seu-usuario/steam-market-intelligence
+
+# 2. Instalar dependências
+pip install -r requirements.txt
+
+# 3. Executar o pipeline completo
+python main.py
+
+# 4. Os CSVs estarão em data/processed/
+#    Abra steam_mercado.pbix no Power BI Desktop
+#    Abra steam_valor.twbx no Tableau Public
+```
+
+---
+
+> 💡 O grande diferencial técnico desse projeto para o portfólio é a combinação de **API + scraping no mesmo pipeline**, a **classe Game com IVS calculado automaticamente no `__post_init__`**, e a **separação clara entre coleta, processamento e exportação via POO** — uma arquitetura que qualquer engenheiro de dados reconhece como madura.
+
+---
+
+Quer que eu detalhe os notebooks de exploração, a estrutura do README final, ou alguma parte do código?

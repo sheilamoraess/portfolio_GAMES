@@ -1,0 +1,41 @@
+faixa_preco,genre,ivs_medio,total_jogos
+Gratuito,Action,29.49,147
+Gratuito,Adventure,29.3,71
+Gratuito,Casual,28.87,539
+Gratuito,Sports,28.32,84
+Gratuito,Indie,27.82,620
+Gratuito,RPG,26.84,122
+Gratuito,Simulation,26.8,80
+Gratuito,Strategy,26.6,107
+Ate R$15,Casual,11.15,1719
+Ate R$15,Sports,8.52,38
+Ate R$15,RPG,7.84,204
+Ate R$15,Simulation,7.35,199
+Ate R$15,Action,7.27,308
+Ate R$15,Indie,6.95,2395
+Ate R$15,Adventure,6.8,248
+Ate R$15,Strategy,6.62,227
+R$15-30,Adventure,1.69,306
+R$15-30,Indie,1.67,1324
+R$15-30,RPG,1.67,182
+R$15-30,Casual,1.66,477
+R$15-30,Action,1.66,201
+R$15-30,Strategy,1.56,134
+R$15-30,Simulation,1.46,225
+R$15-30,Sports,1.43,62
+R$30-60,Indie,0.96,95
+R$30-60,Casual,0.85,66
+R$30-60,Adventure,0.84,129
+R$30-60,Strategy,0.77,70
+R$30-60,RPG,0.76,174
+R$30-60,Action,0.75,121
+R$30-60,Simulation,0.73,88
+R$30-60,Sports,0.67,38
+Acima de R$60,Action,0.52,4
+Acima de R$60,Indie,0.5,2
+Acima de R$60,Adventure,0.47,6
+Acima de R$60,Strategy,0.45,2
+Acima de R$60,RPG,0.44,7
+Acima de R$60,Sports,0.37,7
+Acima de R$60,Casual,0.25,2
+Acima de R$60,Simulation,0.24,5
